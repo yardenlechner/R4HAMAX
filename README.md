@@ -1,148 +1,143 @@
-# R4HAMAX — פיק R4HA מתוך SMF ב־z/OS
+# R4HAMAX — recorded R4HA peaks from z/OS SMF
 
-תוכנית TSO/E REXX לקריאת **SMF Type 70 Subtype 1**, חילוץ `SMF70LAC`,
-והצגת הפיק ו־Top-N לכל SID. אפשר להפיק גם CSV וסיכום שעתי.
+TSO/E REXX that reads **SMF Type 70 Subtype 1**, extracts `SMF70LAC`,
+and reports the peak and Top-N **per SID**. Optional CSV output and hourly
+sample means are included. No compile or link is required on z/OS.
 
-**מצב המימוש:** בדיקות לוגיקה עברו במפרש Regina REXX. הקוד וקובצי ה־JCL
-טרם הורצו מול SMF אמיתי ב־z/OS. לפני שימוש תפעולי יש לבצע את
-[בדיקות הקבלה](docs/TEST_PLAN_HE.md). אין צורך ב־compile או link.
+**Validation status:** synthetic parser and regression tests run under
+Regina REXX locally and in GitHub Actions. Real SMF, TSO/E EXECIO, EBCDIC
+transfer and JCL require the [site acceptance tests](docs/TEST_PLAN.md).
+See the [IBM-based review](docs/REVIEW.md) for findings and limitations.
 
-## מה מודדים?
+## What this measures
 
-`SMF70LAC` כבר מכיל את ה־4-hour rolling average שנרשם במערכת.
-התוכנית מוצאת את **הערך הגבוה ביותר שנרשם ברשומות שנבחרו**;
-היא אינה מחשבת שוב ממוצע של ארבע שעות ואינה מבטיחה לתפוס פיק שהתרחש
-בין שתי רשומות RMF.
+`SMF70LAC` already contains the recorded long-term / four-hour rolling
+average. The program finds its largest recorded value; it does not average
+another four hours of LAC values. A peak between RMF records may be missed.
 
-| נתון בדוח | המשמעות |
+| Output | Definition |
 |---|---|
-| השורה בדירוג 1 לכל SID | `MAX(SMF70LAC)` בתקופה שנבחרה |
-| `MEAN_MSU` | ממוצע חשבוני של דגימות LAC באותה שעה |
-| `MAX_MSU` | הדגימה הגדולה ביותר באותה שעה |
-| `PEAK_HOURLY_MEAN` | השעה בעלת ממוצע הדגימות הגבוה ביותר, לכל SID |
+| Rank 1 for each SID | Maximum selected interval SMF70LAC |
+| Hourly `MEAN_MSU` | Arithmetic mean of unique samples assigned to that hour |
+| Hourly `MAX_MSU` | Largest sample assigned to that hour |
+| `PEAK_HOURLY_MEAN` | Highest hourly sample mean for each SID |
 
-לדוגמה: דגימות של `100, 160, 130` באותה שעה נותנות פיק `160 MSU`
-וממוצע דגימות `130 MSU`. אלה מדדים שונים.
+For samples of 100, 160 and 130 MSU in one hour, the interval peak is 160
+and the sample mean is 130. **Hourly output is not an SCRT calculation.**
+It does not apply licensing rules, duration weights, gap filling or
+interval splitting across hours. SIDs are never summed into a CPC peak.
 
-**הסיכום השעתי אינו שחזור SCRT.** אין שקלול משכים, השלמת חוסרים,
-חלוקת interval בין שעות, כללי capping או חישובי רישוי לפי מוצר.
-אין חיבור בין SIDs ואין חישוב פיק CPC. פירוט ב־[מסמך התכנון](docs/DESIGN_HE.md).
+## Files
 
-## קבצים
-
-| קובץ | תפקיד |
+| File | Purpose |
 |---|---|
-| [src/R4HAMAX.rexx](src/R4HAMAX.rexx) | התוכנית המלאה, כולל `SELFTEST` |
-| [jcl/RUN_EXISTING.jcl](jcl/RUN_EXISTING.jcl) | הרצה מול SMF dump קיים |
-| [jcl/RUN_EXTRACT.jcl](jcl/RUN_EXTRACT.jcl) | IFASMFDP ואחריו REXX |
-| [jcl/RUN_LOGSTREAM.jcl](jcl/RUN_LOGSTREAM.jcl) | IFASMFDL ואחריו REXX |
-| [jcl/SELFTEST.jcl](jcl/SELFTEST.jcl) | בדיקות סינתטיות ב־TSO/E REXX |
-| [docs/INSTALL_HE.md](docs/INSTALL_HE.md) | התקנה והפעלה צעד אחר צעד |
-| [docs/DESIGN_HE.md](docs/DESIGN_HE.md) | שדות, offsets, אלגוריתם והחלטות |
-| [docs/TEST_PLAN_HE.md](docs/TEST_PLAN_HE.md) | מה נבדק ומה עוד צריך לבדוק |
-| [docs/SOURCES.md](docs/SOURCES.md) | מקורות IBM למיפוי ולהגדרות |
-| [examples/report.txt](examples/report.txt) | פלט שהופק מהקוד מנתונים סינתטיים |
-| [tests/run_checks.py](tests/run_checks.py) | בדיקות מקומיות ו־CI |
+| [src/R4HAMAX.rexx](src/R4HAMAX.rexx) | Complete program and built-in SELFTEST |
+| [jcl/RUN_EXISTING.jcl](jcl/RUN_EXISTING.jcl) | Read an existing SMF dump |
+| [jcl/RUN_EXTRACT.jcl](jcl/RUN_EXTRACT.jcl) | IFASMFDP followed by REXX |
+| [jcl/RUN_LOGSTREAM.jcl](jcl/RUN_LOGSTREAM.jcl) | IFASMFDL followed by REXX |
+| [jcl/SELFTEST.jcl](jcl/SELFTEST.jcl) | Synthetic tests under TSO/E |
+| [docs/INSTALL.md](docs/INSTALL.md) | Installation and operating instructions |
+| [docs/DESIGN.md](docs/DESIGN.md) | Mapping, algorithm and defensive checks |
+| [docs/REVIEW.md](docs/REVIEW.md) | IBM findings, fixes and remaining boundaries |
+| [docs/TEST_PLAN.md](docs/TEST_PLAN.md) | Automated tests and host acceptance |
+| [docs/SOURCES.md](docs/SOURCES.md) | Primary IBM references |
+| [examples/report.txt](examples/report.txt) | Actual output from synthetic inputs |
+| [tests/run_checks.py](tests/run_checks.py) | Local and CI regression runner |
 
-## התקנה מהירה
+## Quick installation
 
-1. העבר את `src/R4HAMAX.rexx` במצב **טקסט**, עם המרה ל־EBCDIC של האתר,
-   לספרייה `YOURHLQ.REXX`, member בשם `R4HAMAX`. הספרייה יכולה להיות
-   PDS/PDSE עם `RECFM=FB,LRECL=80`. שורות המקור מוגבלות ל־72 תווים.
-2. העבר את ה־JCL במצב טקסט לספריית JCL. החלף JOB card, מחלקות,
-   `YOURHLQ`, שמות datasets ו־logstream לפי האתר.
-3. הרץ תחילה `SELFTEST.jcl` וחפש `SELFTEST PASS` ו־RC תקין.
-4. הרץ `RUN_EXISTING.jcl` על dump קטן ומוכר; התאם DATE ו־SID.
-5. קרא `REPORT`, `CSVOUT`, `SYSTSPRT` ואת RC של שלב RUN.
+1. Transfer `src/R4HAMAX.rexx` as **text**, converting to the site's EBCDIC
+   code page, into member `R4HAMAX` of `YOURHLQ.REXX`. An FB 80 PDS/PDSE
+   is suitable; source lines are at most 72 characters.
+2. Transfer the JCL as text. Replace the JOB card, classes, `YOURHLQ`,
+   dataset names and log stream placeholders for your site.
+3. Submit `SELFTEST.jcl`; require `SELFTEST PASS` and successful completion.
+4. Run `RUN_EXISTING.jcl` against a small, known dump with DATE and SID set.
+5. Inspect REPORT, CSVOUT, SYSTSPRT and the RUN step return code.
 
-**את ה־SMF הבינארי אין להעביר במצב טקסט ואין להמיר ל־FB.** קלט התוכנית
-הוא dataset של רשומות SMF לוגיות, בדרך כלל VBS מפלט utility של IBM.
-קובץ מקומי גולמי עם BDW/RDW אינו אותו ממשק קלט.
+**Keep SMF binary.** Do not text-convert SMF or turn it into FB records.
+Input is a dataset of logical SMF records, normally VBS from an IBM dump
+utility. A workstation file containing raw BDWs/RDWs is not this interface.
 
-פקודת TSO לאחר הקצאת DDs:
+With the DDs allocated, the TSO command is:
 
 ```text
 %R4HAMAX DATE=2026251 SID=SYSA TOP=10 DAYMODE=END HOURLY=Y CSV=Y
 ```
 
-ב־`SYSTSIN` אפשר לפצל באמצעות `+` בסוף שורה, כפי שמודגם ב־JCL.
+The supplied JCL uses `IKJEFT1B` to propagate a directly invoked REXX
+failure. Validate scheduler handling at your site; see installation notes.
 
-## פרמטרים
+## Parameters
 
-| פרמטר | ברירת מחדל | ערכים |
+| Parameter | Default | Values |
 |---|---|---|
-| `DATE` | `*` | `YYYYDDD` בשנים 1900–2899, או כל התאריכים |
-| `SID` | `*` | 1–4 תווים אלפאנומריים, או כל ה־SIDs |
-| `TOP` | `10` | 1–100 **לכל SID** |
-| `DAYMODE` | `END` | שיוך הדגימה לסוף או לתחילת interval |
-| `HOURLY` | `Y` | הפקת ממוצע דגימות שעתי: `Y/N` |
-| `CSV` | `N` | כתיבה ל־DD `CSVOUT`: `Y/N` |
-| `DEBUG` | `N` | מיפוי ו־HEX מוגבלים לרשומת 70-1 ראשונה: `Y/N` |
+| `DATE` | `*` | `YYYYDDD`, years 1900–2899, or all dates |
+| `SID` | `*` | 1–4 of A–Z, 0–9, `#`, `@`, `$`, `.`; or all SIDs |
+| `TOP` | `10` | 1–100, per SID |
+| `DAYMODE` | `END` | Assign sample to interval `END` or `START` |
+| `HOURLY` | `Y` | Produce hourly sample means: Y/N |
+| `CSV` | `N` | Write accepted unique samples to CSVOUT: Y/N |
+| `DEBUG` | `N` | Limited first Type 70-1 mapping and hex: Y/N |
 
-`SELFTEST` הוא מצב נפרד ללא פרמטרים נוספים וללא SMFIN.
-אם פרמטר מופיע פעמיים, הערך האחרון קובע.
+`SELFTEST` is a separate mode, without other parameters or SMFIN.
+Repeated parameters use the last value. Arguments are uppercased.
 
-## זמן, זהות וכפילויות
+## Input and time contract
 
-- התאריך הוא Julian: `2026251` הוא 8 בספטמבר 2026.
-- `END = START + DURATION`, כולל מילישניות, חצות ושנה מעוברת.
-- ב־`DAYMODE=END`, interval שמסתיים בדיוק ב־00:00 משויך ליום החדש.
-- השעה מקומית ל־RMF. אין המרה ל־UTC או תיקון שעון קיץ.
-- הקלט חייב להשתמש ב־SID ייחודי לכל מערכת לאורך הריצה. אין לערבב
-  מערכות שונות שמשתמשות באותו SID, גם אם הן ב־CPCs שונים.
-- אותו SID, start ו־end עם אותו LAC ודגל STF נספר פעם אחת. ערכים
-  סותרים באותו מפתח גורמים ל־RC=12, כדי למנוע הכרעה שרירותית.
-- הדירוג בירידה; בשוויון נשמר סדר הקלט. סדר SIDs ושעות הוא סדר גילוי.
+- Supported input is unbroken IBM RMF Monitor I Type 70-1 data with a
+  product section of at least 104 bytes and CPU control of at least 94.
+  Unknown or shorter layouts require review, not guessed offsets.
+- Nonzero `SMF70RAN` stops the run: RMF application-level fragments must be
+  reassembled first. EXECIO's VBS support alone does not do that.
+- `END = START + DURATION`, including milliseconds, midnight and leap years.
+  Under END mode, midnight belongs to the new day. `2026251` is 2026-09-08.
+- Time is RMF local time. A selected SID's source identity or GMT/local
+  offset changing stops the run. Split migrations or clock changes into
+  separate runs; there is no UTC normalization.
+- Equal SID/start/end samples with equal LAC and STF scope are counted
+  once. Conflicting duplicates stop the run. Top-N ties retain input order;
+  SIDs and hours appear in discovery order.
+- LAC describes the writing image. One image's record does not provide the
+  LAC values of every partition listed elsewhere in that record.
 
-## קודי סיום
+## Return codes
 
-| RC של ה־REXX | משמעות |
+| REXX RC | Meaning |
 |---|---|
-| `0` | נמצאו דגימות ולא נרשמו האזהרות המפורטות להלן |
-| `4` | אין תוצאה, או רשומות דחויות, כפילויות, STF bit 3 כבוי, או samples skipped |
-| `12` | פרמטר שגוי, שגיאת I/O, כפילות סותרת, חריגת מגבלה או שגיאת REXX |
+| 0 | Samples found, with none of the counted warning conditions |
+| 4 | No samples, rejected records, duplicates, scope/skipped-sample warnings, Boost/conversion/capacity-change flags, or weak identity metadata |
+| 12 | Invalid parameters, I/O failure, conflicting duplicates, split RMF records, identity/time-zone changes, sample limit or REXX condition |
 
-`RC=0` אינו אישור שהקלט מכסה יום מלא. במקרה RC=12 יש להשליך פלט חלקי
-של REPORT/CSVOUT. הודעות השגיאה מופיעות ב־SYSTSPRT.
-יש לאמת באתר כיצד IKJEFT01 וה־scheduler מציגים ומעבירים את RC.
+Some input flag counts precede DATE/SID filtering; see the design document.
+RC 0 does not prove complete coverage. Discard partial REPORT/CSVOUT after
+RC 12. Errors appear in SYSTSPRT.
 
-## בדיקות במחשב פיתוח
+## Development checks
 
-נדרש Regina REXX; Python משמש רק להרצת הבדיקות ואינו נדרש ב־Mainframe.
+Regina REXX and Python are needed for workstation tests only:
 
 ```text
 regina src/R4HAMAX.rexx SELFTEST
 python tests/run_checks.py regina
 ```
 
-ב־Windows אפשר למסור נתיב מלא ל־`regina.exe`. הבדיקות יוצרות קבצים
-זמניים בתוך `.work/`, שמוחרגת מ־Git. ה־workflow מפעיל אותן גם ב־GitHub
-Actions כאשר הוא מופעל במאגר. הבדיקות אינן שולחות SMF לשירות חיצוני.
+On Windows, the second argument can be the full path to `regina.exe`.
+Tests use synthetic data and write temporary files under ignored `.work/`.
+GitHub Actions runs the same checks on Linux. No real SMF is uploaded.
 
-## מגבלות תפעוליות
+## Operating limits
 
-הקריאה היא במנות של 256 רשומות. נשמרים מפתחות של עד 250,000 דגימות
-ייחודיות לצורך מניעת כפילויות, Top-N לכל SID וסיכומים שעתיים.
-זו אינה הבטחה שכל היסטוריית הדגימות תיכנס ל־REGION=64M;
-לנפחים גדולים יש לפצל לפי יום ולמדוד צריכת זיכרון באתר.
+Input is read in batches of 256. Duplicate keys are retained for up to
+250,000 unique samples, alongside per-SID Top-N and hourly aggregates.
+This ceiling does not guarantee a fit in REGION=64M; measure host storage
+and split large input by day.
 
-אין איתור אוטומטי של פערים/intervals חופפים שאינם כפילויות, ואין
-אימות חתימות SMF. השתמש בקלט מהימן ובבדיקות הקבלה לפני הסתמכות על הפיק.
+Review IPL warm-up, gaps, overlapping intervals and extraction completeness.
+WLM initializes its history with zeros at IPL; the program preserves recorded
+LAC rather than inventing a correction. Boost flags are reported without
+rescaling LAC. Full RMF reassembly, gap detection and SCRT reproduction are
+outside this implementation. The [review](docs/REVIEW.md) explains why.
 
-## העלאה ל־GitHub
-
-אם הפרויקט נמצא עדיין רק במחשב המקומי, לאחר התחברות ל־GitHub CLI
-אפשר ליצור מאגר פרטי ולהעלות את ה־commit מתוך תיקיית הפרויקט:
-
-```text
-gh auth login
-gh repo create R4HAMAX --private --source=. --remote=origin --push
-```
-
-פקודת היצירה מיועדת למאגר חדש שאינו קיים עדיין. אם היעד קיים, יש
-לחבר אליו remote מתאים במקום ליצור מאגר נוסף. העלאת קובץ workflow
-עשויה לדרוש הרשאת `workflow` בחשבון או ב־token, לפי שיטת ההתחברות.
-
-`.gitignore` מחריג כלי בדיקה שהורדו מקומית, תוצאות זמניות וקובצי SMF
-נפוצים. אין להוסיף רשומות SMF אמיתיות, credentials או שמות datasets
-רגישים למאגר; הדוגמאות בפרויקט סינתטיות ומשתמשות ב־placeholders.
+This repository is public. Examples use synthetic records and placeholders.
+Do not commit real SMF, credentials or sensitive site identifiers.

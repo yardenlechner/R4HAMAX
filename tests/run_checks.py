@@ -6,6 +6,7 @@ No Python packages required. No real SMF data is read or generated.
 from pathlib import Path
 import datetime as dt
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -60,7 +61,7 @@ body = """
 g.testing = 1
 a = fixture('SYSA','0126251F','0100000F','1500000F',100,1)
 call process a
-call process overlay(d2c(101,4),a,76+36-3,4)
+call process overlay(d2c(101,4),a,148+36-3,4)
 """
 run(driver('conflict', body), ok=False, contains='Conflicting samples')
 
@@ -73,7 +74,7 @@ call process fixture('SYSB','0126251F','0100000F','1500000F',4294967295,1)
 call process fixture('SYSA','0126251F','0110000F','1500000F',0,1)
 call process fixture('SYSA','0126252F','0100000F','1500000F',0,1)
 ka = 'S'c2x('SYSA'); kb = 'S'c2x('SYSB')
-call check words(g.ids)=2,'two SIDs'
+call check g.sidCount=2,'two SIDs'
 call check word(g.topRow.ka.1,1)=0,'zero is valid'
 call check word(g.topRow.kb.1,1)=4294967295,'unsigned 32-bit'
 call check word(g.topRow.ka.1,2)='2026251/10:15:00.000','stable tie'
@@ -88,11 +89,123 @@ body = """
 g.testing = 1
 call process fixture('0','0126251F','0100000F','1500000F',0,1)
 call process fixture('0','0126251F','0110000F','1500000F',0,1)
-call check words(g.ids)=1,'numeric zero SID stays one system'
+call check g.sidCount=1,'numeric zero SID stays one system'
 call report
 say 'ZERO SID PASS'
 """
 run(driver('zerosid', body), contains='ZERO SID PASS')
+
+# IBM SMFPRMxx permits national characters and periods in SIDs.
+body = """
+g.testing = 1
+call parameters 'SID=#@$. TOP=1'
+call process fixture('#@$.','0126251F','0100000F','1500000F',17,1)
+call check g.validCnt=1,'national characters in SID'
+call check g.sidCount=1,'punctuation is safe in stem keys'
+say 'SID CHARACTERS PASS'
+"""
+run(driver('national_sid', body), contains='SID CHARACTERS PASS')
+
+# Independent Python byte construction, using published IBM sample
+# boundaries: nine triplets, product at 100/104, CPU at 204/344.
+# Text uses the desktop interpreter's ASCII, not a raw EBCDIC dump.
+record = bytearray(544)
+def put(offset, value):
+    record[offset-4:offset-4+len(value)] = value
+put(4, b'\xc0\x46')
+put(14, b'SYSA')
+put(18, b'RMF ')
+put(22, struct.pack('>HH', 1, 9))
+put(28, struct.pack('>IHHIHH', 100, 104, 1, 204, 344, 1))
+put(102, b'RMF     ')
+put(110, bytes.fromhex('0235959F0126365F0000001F'))
+put(188, b'TESTPLEXSYSA    ')
+put(209, b'\x10')
+put(240, struct.pack('>I', 123456))
+put(278, b'TEST0000000000000001')
+body = f"""
+g.testing = 1
+a = x2c('{record.hex()}')
+call process a
+sk = 'S'c2x('SYSA')
+call check g.validCnt=1,'independent IBM layout'
+call check word(g.topRow.sk.1,1)=123456,'relocated LAC'
+call check word(g.topRow.sk.1,2)='2026365/23:59:59.001','1 ms'
+say 'INDEPENDENT LAYOUT PASS'
+"""
+run(driver('ibm_layout', body), contains='INDEPENDENT LAYOUT PASS')
+
+# Reject malformed/unintended inputs instead of interpreting padded
+# SUBSTR bytes or combining Monitor I and Monitor III measurements.
+body = """
+g.testing = 1
+a = fixture('SYSA','0126251F','0100000F','1500000F',100,1)
+do n = 2 to length(a)-1
+  call process left(a,n)
+end
+call check g.validCnt=0,'all record truncations rejected'
+call initialize
+g.testing = 1
+call process overlay('00'x,a,1,1)
+call check g.bad.HEADER=1,'header format flags'
+call process overlay('CMF ',a,18-3,4)
+call check g.bad.PRODUCER=1,'non-RMF subsystem'
+call process overlay('CMF     ',a,44+2-3,8)
+call check g.bad.PRODUCER=2,'non-RMF product'
+call process overlay('20'x,a,44+30-3,1)
+call check g.bad.MONITOR3=1,'Monitor III excluded'
+call process overlay(d2c(0,2),a,24-3,2)
+call check g.bad.TRIPLET=1,'too few triplets'
+call process overlay(d2c(999,2),a,24-3,2)
+call check g.bad.TRIPLET=2,'triplets outside record'
+call process overlay(d2c(44,4),a,36-3,4)
+call check g.bad.OVERLAP=1,'overlapping sections'
+call process overlay(d2c(103,2),a,32-3,2)
+call check g.bad.PRODUCT=1,'short product section'
+call process overlay(d2c(93,2),a,40-3,2)
+call check g.bad.CPU=1,'short CPU identity'
+call process overlay('4060'x,a,44+30-3,2)
+call process overlay('0C'x,a,44+30-3,1)
+call process overlay('70'x,a,148+5-3,1)
+call check g.validCnt=1,'flag-only variants deduplicated'
+call check g.skippedCnt=1,'samples skipped retained'
+call check g.boostCnt=1,'boost warning'
+call check g.convertedCnt=1,'conversion warning'
+call check g.capacityCnt=1,'capacity change warning'
+say 'GUARDS PASS'
+"""
+run(driver('guards', body), contains='GUARDS PASS')
+
+base = """
+g.testing = 1
+a = fixture('SYSA','0126251F','0100000F','1500000F',100,1)
+"""
+for name, body, message in [
+    ('broken', "call process overlay(d2c(1,2),a,44+74-3,2)",
+     'RMF reassembly is required'),
+    ('unknown_ran', "call process overlay(d2c(2,2),a,44+74-3,2)",
+     'RMF reassembly is required'),
+    ('identity', "call process a\n"
+     "call process overlay('OTHER   ',a,44+96-3,8)",
+     'Source identity changed'),
+    ('machine', "call process a\n"
+     "call process overlay('OTHERPLANT00000000002',a,148+74-3,20)",
+     'Source identity changed'),
+    ('timezone', "call process a\n"
+     "call process overlay(d2c(1,8),a,44+60-3,8)",
+     'GMT/local offset changed'),
+    ('sample_limit', "g.validCnt=250000\ncall process a",
+     '250000 unique samples exceeded'),
+]:
+    run(driver(name, base + body), ok=False, contains=message)
+
+body = base + """
+call process overlay(copies('00'x,20),a,148+74-3,20)
+call check g.weakCnt=1,'missing identity warning'
+call check g.validCnt=1,'weak identity value retained'
+say 'WEAK IDENTITY PASS'
+"""
+run(driver('weak_identity', body), contains='WEAK IDENTITY PASS')
 
 # Simulate two EXECIO batches (256 and 2 records), EOF RC=2 with data,
 # CSV/report writes, and close calls. Includes one duplicate.
@@ -102,11 +215,16 @@ fakeIo: procedure expose g. batch. out. rc
   rc = 0
   if pos('DISKR SMFIN',command) > 0 then do
     if pos('FINIS',command) > 0 then do
+      if g.failClose = 1 then rc = 20
       g.inputClosed = 1
       return
     end
     if g.failRead = 1 then do
       rc = 20
+      return
+    end
+    if g.emptyConcat = 1 then do
+      rc = 4
       return
     end
     g.batches = g.batches + 1
@@ -122,11 +240,16 @@ fakeIo: procedure expose g. batch. out. rc
   end
   parse var command . . . dd .
   if pos('FINIS',command) > 0 then do
+    if g.failClose = 1 then rc = 20
     g.closed.dd = 1
     return
   end
   if g.failWrite = 1 then do
     rc = 20
+    return
+  end
+  if g.truncateWrite = 1 then do
+    rc = 1
     return
   end
   g.written.dd = g.written.dd+1
@@ -160,8 +283,31 @@ run(driver('io', body, io), contains='IO PASS')
 for name, body, message in [
     ('readfail', 'g.failRead = 1\ncall readInput', 'SMFIN read failed'),
     ('writefail', "g.failWrite = 1\ncall emit 'REPORT','test'", 'write failed'),
+    ('truncate', "g.truncateWrite = 1\ncall emit 'REPORT','test'",
+     'write failed RC=1'),
+    ('concat', 'g.emptyConcat = 1\ncall readInput', 'SMFIN read failed RC=4'),
+    ('closefail', 'g.failClose = 1\ncall readInput', 'SMFIN close failed'),
 ]:
     run(driver(name, body, io), ok=False, contains=message)
+
+# Exercise the real top-level return-code decision, with just I/O mocked.
+for name, setup, expected in [
+    ('empty_rc', '', 4),
+    ('normal_rc', "g.inputCount=1\ng.input.1="
+     "fixture('SYSA','0126251F','0100000F','1500000F',100,1)", 0),
+    ('scope_rc', "g.inputCount=1\ng.input.1="
+     "fixture('SYSA','0126251F','0100000F','1500000F',100,0)", 4),
+]:
+    main = SOURCE.replace('call initialize\n',
+                          'call initialize\n' + setup + '\n', 1)
+    main = main.replace('address TSO ', 'call fakeIo ')
+    path = WORK / (name + '.rexx')
+    path.write_text(main + '\n' + io, encoding='ascii')
+    result = subprocess.run([REXX, str(path)], capture_output=True,
+                            text=True, timeout=30)
+    # Regina Windows normalizes nonzero EXIT to process RC 1; Unix
+    # preserves the REXX RC. Either must remain a failure, never zero.
+    assert (result.returncode == 0) == (expected == 0), result
 run(driver('empty', "g.testing = 1\ncall readInput\ncall report\n"
            "call check g.validCnt=0,'empty input'\nsay 'EMPTY PASS'", io),
     contains='EMPTY PASS')
@@ -187,4 +333,6 @@ for path in [ROOT / 'src/R4HAMAX.rexx', *ROOT.glob('jcl/*.jcl')]:
         assert len(line) <= 72, (path.name, n, len(line))
 print('PASS: parameters, calendar oracle, conflicts, multi-SID, unsigned,')
 print('batch/EOF I/O simulation, failures, empty input, report and columns.')
+print('PASS: IBM layout, truncation sweep, SID characters, producer/flags,')
+print('RMF splitting, identity/time-zone guards, I/O errors and limits.')
 print('Not tested here: z/OS EXECIO/QSAM, EBCDIC transfer, JCL submission.')

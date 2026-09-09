@@ -14,6 +14,8 @@ call report
 if g.validCnt = 0 then exit 4
 if g.rejectCnt + g.scopeCnt + g.dupCnt > 0 then exit 4
 if g.skippedCnt > 0 then exit 4
+if g.boostCnt + g.convertedCnt + g.capacityCnt > 0 then exit 4
+if g.weakCnt > 0 then exit 4
 exit 0
 
 initialize:
@@ -25,8 +27,6 @@ initialize:
   g.cfgHourly = 'Y'
   g.cfgDebug = 'N'
   g.cfgCsv = 'N'
-  g.ids = ''
-  g.hours = ''
   g.debugText = ''
   g.firstDate = ''
 return
@@ -51,8 +51,8 @@ parameters: procedure expose g.
   if g.cfgSid <> '*' then do
     if length(g.cfgSid) < 1 | length(g.cfgSid) > 4 then
       call fatal 'SID must be 1 to 4 characters'
-    if verify(g.cfgSid,'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') > 0 then
-      call fatal 'SID must be alphanumeric'
+    if validSid(g.cfgSid) = 0 then
+      call fatal 'SID allows A-Z, 0-9, #, @, $, and period'
   end
   if g.cfgTop = '' then call fatal 'Missing TOP'
   if verify(g.cfgTop,'0123456789') > 0 then call fatal 'Bad TOP'
@@ -107,6 +107,10 @@ process: procedure expose g.
     call reject 'short'
     return
   end
+  if bitand(left(rec,1),'C0'x) \== 'C0'x then do
+    call reject 'header'
+    return
+  end
   if uint(rec,22,2) <> 1 then return
   g.subCnt = g.subCnt + 1
   triplets = uint(rec,24,2)
@@ -123,11 +127,14 @@ process: procedure expose g.
     g.debugText = 'LEN='length(rec) 'PRS='po pl pn 'CCS='co cl cn
     g.debugHex = c2x(left(rec,min(48,length(rec))))
   end
-  if section(length(rec),po,pl,pn,32,tableEnd) = 0 then do
+  if section(length(rec),po,pl,pn,104,tableEnd) = 0 then do
     call reject 'product'
     return
   end
-  if section(length(rec),co,cl,cn,40,tableEnd) = 0 then do
+  /* QSAM spanned-record assembly does not reassemble RMF records. */
+  if uint(rec,po+74,2) <> 0 then
+    call fatal 'SMF70RAN is nonzero; RMF reassembly is required'
+  if section(length(rec),co,cl,cn,94,tableEnd) = 0 then do
     call reject 'cpu'
     return
   end
@@ -135,9 +142,27 @@ process: procedure expose g.
     call reject 'overlap'
     return
   end
+  if substr(rec,18-3,4) \== 'RMF ' | ,
+      strip(substr(rec,po+2-3,8)) \== 'RMF' then do
+    call reject 'producer'
+    return
+  end
+  fla = substr(rec,po+30-3,2)
+  stf = substr(rec,co+5-3,1)
+  /* Monitor I only: avoid mixing independent collection streams. */
+  if bitand(left(fla,1),'20'x) \== '00'x then do
+    call reject 'monitor3'
+    return
+  end
   /* Bit 1 says samples were skipped, NOT that LAC is invalid. */
-  if bitand(substr(rec,po+30-3,1),'40'x) <> '00'x then
+  if bitand(left(fla,1),'40'x) \== '00'x then
     g.skippedCnt = g.skippedCnt + 1
+  if bitand(right(fla,1),'60'x) \== '00'x then
+    g.boostCnt = g.boostCnt + 1
+  if bitand(left(fla,1),'0C'x) \== '00'x then
+    g.convertedCnt = g.convertedCnt + 1
+  if bitand(stf,'60'x) \== '00'x then
+    g.capacityCnt = g.capacityCnt + 1
   dh = c2x(substr(rec,po+14-3,4))
   th = c2x(substr(rec,po+10-3,4))
   ih = c2x(substr(rec,po+18-3,4))
@@ -169,7 +194,7 @@ process: procedure expose g.
     call reject 'sid'
     return
   end
-  if verify(sid,'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789') > 0 then do
+  if validSid(sid) = 0 then do
     call reject 'sid'
     return
   end
@@ -177,14 +202,32 @@ process: procedure expose g.
     g.sidCnt = g.sidCnt + 1
     return
   end
+  /* Compare raw identity/time-zone bytes, never a numeric string. */
+  machine = substr(rec,co+74-3,20)
+  names = substr(rec,po+88-3,16)
+  ident = c2x(machine || substr(rec,po+50-3,1) || names)
+  lgo = c2x(substr(rec,po+60-3,8))
+  if strip(translate(machine,' ','00'x)) = '' | ,
+      strip(translate(names,' ','00'x)) = '' then
+    g.weakCnt = g.weakCnt + 1
   lac = uint(rec,co+36,4)
-  scope = bitand(substr(rec,co+5-3,1),'10'x) = '10'x
-  call accept sid,sample,sd,ed,dur,lac,scope
+  scope = bitand(stf,'10'x) == '10'x
+  call accept sid,sample,sd,ed,dur,lac,scope,ident,lgo
 return
 
 accept: procedure expose g.
-  parse arg sid,sample,sd,ed,dur,lac,scope
+  parse arg sid,sample,sd,ed,dur,lac,scope,ident,lgo
   sk = 'S'c2x(sid)
+  if g.sidSamples.sk > 0 then do
+    if g.identity.sk \== ident then
+      call fatal 'Source identity changed for SID='sid
+    if g.offset.sk \== lgo then
+      call fatal 'GMT/local offset changed for SID='sid
+  end
+  else do
+    g.identity.sk = ident
+    g.offset.sk = lgo
+  end
   dk = sk'.'sd'.'ed
   signature = lac':'scope
   if g.seen.dk <> 0 then do
@@ -198,7 +241,8 @@ accept: procedure expose g.
     call fatal '250000 unique samples exceeded; split input by day'
   g.seen.dk = signature
   if g.sidSamples.sk = 0 then do
-    g.ids = strip(g.ids sk)
+    g.sidCount = g.sidCount + 1
+    si = g.sidCount; g.sidKey.si = sk
     g.sidName.sk = sid
   end
   if g.firstDate = '' then g.firstDate = left(sample,7)
@@ -221,7 +265,8 @@ accept: procedure expose g.
   if g.cfgHourly = 'Y' then do
     hk = sk'.'left(sample,10)
     if g.hourN.hk = 0 then do
-      g.hours = strip(g.hours hk)
+      g.hourCount = g.hourCount + 1
+      hi = g.hourCount; g.hourKey.hi = hk
       g.hourSid.hk = sid
       g.hourStamp.hk = left(sample,10)
       g.hourMinDur.hk = dur
@@ -237,6 +282,11 @@ accept: procedure expose g.
   if g.cfgCsv = 'Y' then
     call emit 'CSVOUT',sid','sample','sd','ed','dur','lac','scope
 return
+
+validSid: procedure
+  parse arg sid
+  if length(sid) < 1 | length(sid) > 4 then return 0
+return verify(sid,'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#@$.') = 0
 
 reject: procedure expose g.
   parse upper arg reason
@@ -320,8 +370,8 @@ report: procedure expose g.
     ' DAYMODE='g.cfgMode 'TOP='g.cfgTop
   call emit 'REPORT','Timestamps: YYYYDDD/HH:MM:SS.mmm, RMF local time'
   if g.validCnt = 0 then call emit 'REPORT','NO QUALIFYING SAMPLES'
-  do ri = 1 to words(g.ids)
-    sk = word(g.ids,ri)
+  do ri = 1 to g.sidCount
+    sk = g.sidKey.ri
     call emit 'REPORT',' '
     call emit 'REPORT','SID='g.sidName.sk ||,
       ' UNIQUE_SAMPLES='g.sidSamples.sk
@@ -333,7 +383,7 @@ report: procedure expose g.
     if word(g.topRow.sk.1,6) = 0 then
       call emit 'REPORT','WARNING: peak STF bit 3 OFF; check scope'
   end
-  if words(g.ids) > 1 then
+  if g.sidCount > 1 then
     call emit 'REPORT','Multiple SIDs: separate peaks, NO CPC sum'
   if g.multiDate = 1 then
     call emit 'REPORT','Multiple sample dates selected'
@@ -341,8 +391,8 @@ report: procedure expose g.
     call emit 'REPORT',' '
     call emit 'REPORT','HOURLY SAMPLE MEANS - NOT SCRT / NOT COVERAGE'
     call emit 'REPORT','SID HOUR N MEAN_MSU MAX_MSU MIN_MS MAX_MS OFF'
-    do hi = 1 to words(g.hours)
-      hk = word(g.hours,hi)
+    do hi = 1 to g.hourCount
+      hk = g.hourKey.hi
       avg = g.hourSum.hk / g.hourN.hk
       call emit 'REPORT',g.hourSid.hk g.hourStamp.hk ||,
         ' 'g.hourN.hk format(avg,,3) g.hourMax.hk ||,
@@ -353,8 +403,8 @@ report: procedure expose g.
       if avg > g.hourSum.bestKey/g.hourN.bestKey then
         g.bestHour.hsk = hk
     end
-    do hi = 1 to words(g.ids)
-      hsk = word(g.ids,hi); hk = g.bestHour.hsk
+    do hi = 1 to g.sidCount
+      hsk = g.sidKey.hi; hk = g.bestHour.hsk
       call emit 'REPORT','PEAK_HOURLY_MEAN SID='g.sidName.hsk ||,
         ' HOUR='g.hourStamp.hk ||,
         ' MSU='format(g.hourSum.hk/g.hourN.hk,,3)
@@ -369,7 +419,13 @@ report: procedure expose g.
   call emit 'REPORT','REJECTED='g.rejectCnt ||,
     ' DUPLICATES='g.dupCnt 'STF_OFF='g.scopeCnt
   call emit 'REPORT','INPUT_RECORDS_WITH_SKIPPED_SAMPLES='g.skippedCnt
-  reasons = 'SHORT TRIPLET PRODUCT CPU OVERLAP PACKED SID'
+  call emit 'REPORT','INPUT_BOOST='g.boostCnt ||,
+    ' INPUT_CONVERTED='g.convertedCnt
+  call emit 'REPORT','INPUT_CAPACITY_CHANGE='g.capacityCnt ||,
+    ' SELECTED_WEAK_IDENTITY='g.weakCnt
+  call emit 'REPORT','Recorded LAC only; check IPL warm-up and gaps'
+  reasons = 'SHORT HEADER TRIPLET PRODUCT CPU OVERLAP PACKED SID'
+  reasons = reasons 'PRODUCER MONITOR3'
   do di = 1 to words(reasons)
     reason = word(reasons,di)
     call emit 'REPORT','REJECT_'translate(reason)'='g.bad.reason
@@ -479,21 +535,27 @@ return
 
 fixture: procedure
   parse arg sid,dh,th,ih,lac,scope
-  /* RDW-relative: header 44, product 32, CPU 40 = 116 bytes. */
-  rec = copies('00'x,112)
+  /* RDW-relative: header 44, product 104, CPU 94 = 242 bytes. */
+  rec = copies('00'x,238)
+  rec = overlay('C0'x,rec,1,1)
   rec = overlay(d2c(70,1),rec,5-3,1)
   rec = overlay(left(sid,4),rec,14-3,4)
+  rec = overlay('RMF ',rec,18-3,4)
   rec = overlay(d2c(1,2),rec,22-3,2)
   rec = overlay(d2c(2,2),rec,24-3,2)
   rec = overlay(d2c(44,4),rec,28-3,4)
-  rec = overlay(d2c(32,2),rec,32-3,2)
+  rec = overlay(d2c(104,2),rec,32-3,2)
   rec = overlay(d2c(1,2),rec,34-3,2)
-  rec = overlay(d2c(76,4),rec,36-3,4)
-  rec = overlay(d2c(40,2),rec,40-3,2)
+  rec = overlay(d2c(148,4),rec,36-3,4)
+  rec = overlay(d2c(94,2),rec,40-3,2)
   rec = overlay(d2c(1,2),rec,42-3,2)
+  rec = overlay(left('RMF',8),rec,44+2-3,8)
+  rec = overlay(left('TESTPLEX',8),rec,44+88-3,8)
+  rec = overlay(left(sid,8),rec,44+96-3,8)
   rec = overlay(x2c(th),rec,44+10-3,4)
   rec = overlay(x2c(dh),rec,44+14-3,4)
   rec = overlay(x2c(ih),rec,44+18-3,4)
-  rec = overlay(d2c(scope*16,1),rec,76+5-3,1)
-  rec = overlay(d2c(lac,4),rec,76+36-3,4)
+  rec = overlay(d2c(scope*16,1),rec,148+5-3,1)
+  rec = overlay(d2c(lac,4),rec,148+36-3,4)
+  rec = overlay('TEST0000000000000001',rec,148+74-3,20)
 return rec

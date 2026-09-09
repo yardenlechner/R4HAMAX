@@ -1,4 +1,5 @@
 /* REXX: R4HAMAX -- see README.md before submitting on z/OS. */
+/* Author and project owner: Yarden Lechner. */
 numeric digits 20
 signal on syntax name failed
 signal on novalue name failed

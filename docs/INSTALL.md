@@ -1,5 +1,28 @@
 # Installation and operation on z/OS
 
+Project owner: **Yarden Lechner**.
+
+## Batch operation: no manual TSO commands
+
+All supplied run paths are JCL jobs. After transferring the source and
+customizing the JCL once, submit the appropriate job through your site's
+normal submission process or scheduler. No interactive TSO logon or
+manual ALLOCATE/FREE sequence is required for an analysis run.
+
+`IKJEFT1B` provides TSO/E inside a batch step. JCL DD statements allocate
+the files, `SYSTSIN` invokes R4HAMAX, and the REXX program executes EXECIO
+automatically. Seeing TSO commands in source or SYSTSIN does not mean
+that an operator must execute them separately.
+
+Use RUN_EXISTING for a prepared dump, RUN_EXTRACT for extraction and
+analysis in one job, or RUN_LOGSTREAM for log-stream extraction and
+analysis in one job. In the extraction jobs, the analysis step runs only
+when extraction returns RC=0. REPORT/CSVOUT and diagnostic output go to
+the DD destinations defined in the job, which default to spool.
+
+Source transfer, library provisioning and the first site customization
+are installation tasks; the run jobs assume they have been completed.
+
 ## Requirements
 
 - TSO/E REXX with EXECIO support for VS/VBS. IBM introduced this support

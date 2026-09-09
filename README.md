@@ -1,5 +1,7 @@
 # R4HAMAX — recorded R4HA peaks from z/OS SMF
 
+**Author and project owner: Yarden Lechner**
+
 TSO/E REXX that reads **SMF Type 70 Subtype 1**, extracts `SMF70LAC`,
 and reports the peak and Top-N **per SID**. Optional CSV output and hourly
 sample means are included. No compile or link is required on z/OS.
@@ -59,14 +61,38 @@ interval splitting across hours. SIDs are never summed into a CPC peak.
 Input is a dataset of logical SMF records, normally VBS from an IBM dump
 utility. A workstation file containing raw BDWs/RDWs is not this interface.
 
-With the DDs allocated, the TSO command is:
+## Run everything through jobs
 
-```text
-%R4HAMAX DATE=2026251 SID=SYSA TOP=10 DAYMODE=END HOURLY=Y CSV=Y
+After the one-time source transfer and site-specific JCL setup, submit
+one of these jobs. No interactive TSO session or manual ALLOCATE/FREE
+commands are required to run the analysis.
+
+| Input | Submit | Processing in the job |
+|---|---|---|
+| Existing dump | `jcl/RUN_EXISTING.jcl` | REXX analysis and reports |
+| SMF archive | `jcl/RUN_EXTRACT.jcl` | IFASMFDP extraction, then REXX analysis and reports |
+| SMF log stream | `jcl/RUN_LOGSTREAM.jcl` | IFASMFDL extraction, then REXX analysis and reports |
+| Installation check | `jcl/SELFTEST.jcl` | REXX synthetic self-test |
+
+`IKJEFT1B` starts the TSO/E environment **inside the batch job**. The DD
+statements allocate input, source library and outputs. `SYSTSIN` supplies
+the REXX invocation automatically, for example:
+
+```jcl
+//SYSTSIN  DD *
+ %R4HAMAX DATE=2026251 SID=SYSA TOP=10 DAYMODE=END +
+   HOURLY=Y CSV=Y DEBUG=N
+/*
 ```
 
-The supplied JCL uses `IKJEFT1B` to propagate a directly invoked REXX
-failure. Validate scheduler handling at your site; see installation notes.
+These lines belong in the supplied JCL; they are not an extra command
+to type at a terminal. The program's `ADDRESS TSO 'EXECIO ...'` statements
+also run automatically in that batch environment. TSO/E is the runtime,
+not a requirement for interactive operation. Submit through your site's
+normal JES submission or scheduler process and retrieve the spool output.
+
+`IKJEFT1B` propagates a directly invoked REXX failure. Validate scheduler
+handling at your site; see installation notes.
 
 ## Parameters
 

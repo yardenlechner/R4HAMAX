@@ -2,107 +2,145 @@
 
 Project owner: **Yarden Lechner**
 
-Review date: **2026-09-09**
+## Possible corrections: what to check, what to change, and why
 
-This log records what to correct, why it matters, what the GitHub version
-already implements, and what must still be checked on z/OS.
+These are checks for a TSO/E REXX SMF 70-1 reader and its JCL.
+Apply a correction only if the target code needs it. Most safeguards already
+exist in the repository's R4HAMAX; the notes below also explain what to check
+when adapting another implementation. This document contains no private
+source, photographs, site identifiers or production measurements.
 
-## Scope and publication rules
+### 1. Apply the requested date as an actual filter
 
-This checklist documents the maintained R4HAMAX implementation only.
-Do not publish private source photographs, private program names, site
-identifiers, dataset names, or production values. Use invented examples
-for tests and explanations. The owner's public credit above is intentional.
+**Check:** Is the date argument used to select records, or only printed?
 
-Transfer the current source to the intended SYSEXEC library before testing
-a new revision. Repository changes do not automatically update site members.
+**Possible correction:** Validate YYYYDDD, derive the selected measurement day,
+and reject other days before updating output, peaks or aggregates. Count
+DATE exclusions separately from malformed records.
 
-## WLA versus LAC: synthetic examples
+**Why:** A date in a dataset name or report heading does not restrict its
+contents. A multi-day input can otherwise produce a peak from the wrong day.
 
-These numbers are invented for regression testing, not production evidence:
+### 2. Use RMF measurement time for the sample timestamp
 
-| Example | WLA bytes | WLA | LAC bytes | LAC / R4HA |
-|---|---|---:|---|---:|
-| A | `00000049` | 73 | `0000000C` | 12 |
-| B | `0000003A` | 58 | `00000009` | 9 |
+**Check:** Does the reader use common SMF header time or the RMF interval?
 
-WLA is processor capacity available to the image; LAC is the recorded
-long-term average. The field offsets within CPU Control are 32 and 36,
-respectively, each four bytes. In a REXX string containing just that
-section, their positions are 33 and 37:
+**Possible correction:** Read Product-section SMF70DAT, SMF70IST and SMF70INT.
+Calculate END = START + duration, handling milliseconds, midnight and year
+rollover. Use one documented START/END policy for date selection and reporting.
+
+**Why:** SMF recording time can differ from measurement time, causing a
+comparison against the wrong interval or a wrong day near midnight.
+
+### 3. Preserve I/O errors in the final return code
+
+**Check:** Can a read/write/close error be replaced by a successful final RC?
+
+**Possible correction:** Save EXECIO RC immediately. Process records returned
+with EOF RC=2; treat other nonzero read codes as failures. Check output
+truncation, writes and closes too. Preserve fatal RC=12 through cleanup,
+even if earlier records were accepted. Mark partial output as unusable.
+
+**Why:** A partial report must not look like a successful full-input result.
+IKJEFT1B cannot recover a failure that the program itself replaces with RC=0.
+
+### 4. Validate sections, producer and LAC scope
+
+**Check:** Are section locations and semantics checked before field access?
+
+**Possible correction:** Validate the consumed triplets, lengths, counts,
+bounds and overlap against the supported IBM layout. Check producer and
+collection mode. Detect RMF-level splitting through SMF70RAN and stop unless
+reassembly is supported. Read STF bit 3 and report an off flag explicitly.
+
+**Why:** An in-bounds binary number can still come from the wrong section or
+an unsupported record. EXECIO VBS support does not reassemble RMF fragments.
+
+### 5. Distinguish WLA capacity from LAC / R4HA
+
+**Check:** Which field feeds the reported R4HA and the maximum calculation?
+
+**Possible correction:** CPU Control relative offset 32 is SMF70WLA; offset
+36 is SMF70LAC. Both are four bytes. In a string containing only that section:
 
 ```rexx
 wla = C2D(Substr(ctlSection, 33, 4))
 lac = C2D(Substr(ctlSection, 37, 4))
 ```
 
+Use LAC for the recorded R4HA peak and label WLA separately as capacity.
+For the whole RDW-free EXECIO string, the LAC position is CPU section offset
+plus 36 minus 3. Do not subtract the RDW adjustment twice.
+
+**Why:** Reporting capacity as R4HA produces plausible but wrong values.
+A 15-minute record cadence is not a reason to divide recorded LAC by four.
 [IBM CPU Control mapping](https://www.ibm.com/docs/en/zos/3.2.0?topic=s1cpia-cpu-control-section).
 
-Reading or labeling WLA as R4HA reports capacity instead of the recorded
-rolling average. Verify both field offsets and output labels. The repository's
-LAC extraction uses offset 36 without shifting or scaling.
+### 6. Retain the first sample even when its value is zero
 
-**Do not divide LAC by four.** A 15-minute recording cadence does not
-change the units of an already computed four-hour rolling average.
-The regression checks that the invented records return LAC 12 and 9,
-never the adjacent WLA 73 and 58.
+**Check:** Is the maximum initialized to zero and updated only on greater-than?
 
-## Correction and verification checklist
+**Possible correction:** Track whether a sample has been accepted per SID.
+Store the first sample's value and timestamp even when LAC=0. Keep a stable
+policy for later equal values.
 
-| Check | Why it matters | Current R4HAMAX status | Host verification still needed |
-|---|---|---|---|
-| DATE filter actually applied | Displaying a date argument is not sufficient; selection must use it | Implemented in `process`, using the chosen START/END sample date | Use a known multi-day dump; verify included dates and DATE_FILTER count |
-| Measurement timestamps | Common SMF header time can differ from the measurement interval | Uses Product DAT/IST/INT; calculates END with midnight rollover | Compare the same SID and actual interval; check late-written records |
-| Read/write/close failures | A later success must not overwrite an earlier I/O failure | Read, write, truncation and close failures terminate with RC=12 | Test actual step/scheduler RC and discard partial output |
-| Section and producer checks | Bounds alone do not prove the expected mapping or semantics | Validates consumed triplets, overlap, producer and Monitor I; stops on nonzero RAN | Confirm site layout; distinguish VBS spanning from RMF splitting |
-| STF bit 3 | LAC semantics depend on the scope flag | Retained per sample; warnings and RC=4 when off | Inspect raw STF and explain any off values |
-| All-zero day | A zero-initialized maximum can leave the first zero sample without a timestamp | First zero sample is retained in Top-N with its timestamp | Check an all-zero test input produces a dated zero peak |
-| Rejected-record visibility | Silent arbitrary value ceilings can hide records and invalidate a peak | Named rejection counters; no arbitrary LAC/WLA ceiling | Reconcile counts; a valid binary number is not proof of physical plausibility |
-| Storage usage | Retaining every output row unnecessarily increases storage demand | Input batches of 256; streamed CSV/report; retained duplicate keys capped at 250000 | Measure REGION/CPU for the real daily volume |
-| Preserve earlier output | Pre-deleting an earlier result loses it even if a new run fails | Supplied run jobs use spool and do not pre-delete a named prior report | If saving datasets, use distinct run names or a site GDG policy; accept only after RC checks |
-| Raw field diagnostics | Earlier R4HAMAX DEBUG showed header/triplets but not LAC bytes | Added bounded selected-sample WLA/LAC HEX+decimal and STF diagnostics | Match the debug values against an independent formatter |
+**Why:** An all-zero day otherwise leaves the peak timestamp empty. Zero
+consumption and no qualifying samples are different results.
 
-## DEBUG added in this update
+### 7. Explain every exclusion
 
-Use `DEBUG=Y` in the existing job's SYSTSIN invocation. The report retains
-its first Type 70-1 header/triplet diagnostic and additionally shows at most
-three **unique selected** samples, in input order:
+**Check:** Are records silently skipped, including by arbitrary MSU ceilings?
 
-- SID and sample timestamp;
-- CCS offset, CPU section length, and LAC position in the RDW-free string;
-- WLA HEX and decimal;
-- LAC HEX and decimal;
-- STF HEX and bit 3.
+**Possible correction:** Add named rejection reasons and counters. Remove
+undocumented value ceilings used instead of layout validation. Count normal
+DATE/SID filtering separately, and investigate unexpected values explicitly.
 
-These are not necessarily the daily peak samples, and the limit is across
-all selected SIDs. Use a single SID and a focused input extract when
-investigating a particular interval. Duplicates and filtered samples do
-not consume the three-sample limit. DEBUG=N produces no extra field trace.
-The trace does not alter peak selection, CSV columns or hourly arithmetic.
+**Why:** Silent exclusions can hide the true peak. Correct unsigned decoding
+alone is not proof of a physically plausible measurement.
 
-## What remains an operating check, not an implemented feature
+### 8. Bound memory used by input and output
 
-- Verify the actual source member and library executed by the job.
-- Verify extraction contents; a date in a dataset name is not a filter.
-- Verify complete coverage and compare like-for-like metrics in another tool.
-- Resolve missing/overlapping intervals and legitimate source/time-zone changes
-  before combining data. There is no automatic gap repair or UTC timeline.
-- Review IPL warm-up, Boost, conversion and capacity-change flags.
-- Use a validated RMF-aware solution for broken records; reassembly is not
-  implemented here. R4HAMAX stops rather than accepting fragments.
-- Distinguish interval peak, hourly sample mean and SCRT licensing output.
-- A normal nonzero return can still leave a cataloged partial dataset;
-  DISP alone is not a substitute for checking the job's result.
+**Check:** Does the program retain every input record or output row until EOF?
 
-## Validation evidence and acceptance
+**Possible correction:** Read in batches and stream detail output. Retain only
+state needed for peaks, requested aggregates and deduplication, with a documented
+limit. R4HAMAX already reads batches of 256 and caps unique retained samples.
 
-The automated suite exercises the actual REXX parser with synthetic data,
-including distinct adjacent WLA/LAC values, the three-sample debug limit,
-filtered/duplicate exclusion, report emission and DEBUG=N behavior.
-Existing tests cover dates, zero peaks, bounds, flags and simulated I/O
-failures. A successful desktop/CI run does not establish host acceptance.
+**Why:** A small daily test may pass while a larger dump exhausts storage.
+Batching does not make total memory constant when history keys are retained.
 
-Complete host acceptance is still required. Record actual transfer, VBS,
-date/peak, I/O and scheduler results using [the acceptance plan](docs/TEST_PLAN.md).
-Keep site evidence outside the public repository. See [DESIGN](docs/DESIGN.md)
-for behavior and [REVIEW](docs/REVIEW.md) for additional IBM findings.
+### 9. Preserve previous output when a new run fails
+
+**Check:** Does the JCL delete the previous report before the new run succeeds?
+
+**Possible correction:** Use spool or distinct output datasets/GDG generations
+under site policy. Accept new output only after checking the step RC. Do not
+assume DISP=(NEW,CATLG,DELETE) discards output after a normal nonzero return.
+
+**Why:** A failed rerun can otherwise destroy the earlier valid report and
+leave a partial replacement. The repository jobs already default to spool.
+
+### 10. Make DEBUG useful and bounded
+
+**Check:** Does DEBUG display actual field evidence, or is the option only parsed?
+
+**Possible correction:** Show sample SID/time, CPU section location/length,
+WLA and LAC in HEX and decimal, and STF flags. Limit the number of records and
+state which ones are shown. R4HAMAX now traces up to three unique selected
+samples; these are not necessarily peak samples. DEBUG=N disables the trace.
+
+**Why:** Raw bytes distinguish a wrong offset from a display or aggregation
+problem. Plausible values alone cannot validate the parser. Keep real trace
+output outside the public repository.
+
+## Verification after any applicable correction
+
+Check a multi-day input, midnight rollover, an all-zero day, distinct adjacent
+WLA/LAC values, malformed sections, EOF with a partial batch and an I/O failure
+after accepted records. Confirm separate SID results and unchanged arithmetic:
+interval maximum and hourly sample mean are different outputs, neither is a
+complete SCRT implementation. Use invented data for public regression tests.
+
+Actual z/OS transfer, VBS I/O, complete-day coverage, independent field comparison
+and scheduler return codes still require site validation. See the detailed
+[acceptance plan](docs/TEST_PLAN.md) and [design](docs/DESIGN.md).

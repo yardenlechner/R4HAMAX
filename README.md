@@ -33,7 +33,7 @@ interval splitting across hours. SIDs are never summed into a CPC peak.
 
 | File | Purpose |
 |---|---|
-| [FIXES LOG.md](FIXES%20LOG.md) | Corrections, implemented guards and host verification checklist |
+| [FIXES LOG.md](FIXES%20LOG.md) | Possible corrections: what to check, what to change, and why |
 | [src/R4HAMAX.rexx](src/R4HAMAX.rexx) | Complete program and built-in SELFTEST |
 | [jcl/RUN_EXISTING.jcl](jcl/RUN_EXISTING.jcl) | Read an existing SMF dump |
 | [jcl/RUN_EXTRACT.jcl](jcl/RUN_EXTRACT.jcl) | IFASMFDP followed by REXX |

@@ -1,0 +1,7 @@
+.tools/
+.work/
+*.zip
+__pycache__/
+*.smf
+*.bin
+*.dump

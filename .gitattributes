@@ -1,0 +1,4 @@
+* text=auto
+*.rexx text eol=lf
+*.jcl text eol=lf
+*.md text eol=lf

@@ -26,7 +26,8 @@ All generated files are stored in ignored `.work/`.
 | Mapping | Independently built sections at different offsets; format/producer guards |
 | Bounds | Every truncated prefix of a fixture; short sections; bad triplets; overlap |
 | Calendar | Python Gregorian oracle, century rules, milliseconds and midnight |
-| Values | Zero, unsigned 32-bit conversion, stable ties, per-SID ranking |
+| Values | Zero, unsigned 32-bit conversion, stable ties, per-SID ranking; distinct WLA/LAC pairs 73/12 and 58/9 |
+| Field DEBUG | HEX/decimal output, three unique selected samples, filters/duplicates excluded, disabled by default |
 | Selection | START/END, DATE, SID, multiple systems/dates |
 | Duplicates | Equal samples ignored, conflicting samples fatal |
 | Provenance | Changed machine/name or LGO fatal; missing identity warning |

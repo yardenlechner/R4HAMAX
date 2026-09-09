@@ -176,6 +176,8 @@ after input completes. A write/truncation/close error returns RC=12.
 SYSTSPRT gets the error and, for a write failure, the attempted line.
 There is no fallback full report; discard partial output and rerun.
 
-DEBUG stores the first 70-1 triplet map and up to 48 header bytes. It is
-not a dump of every record. No credentials or live SMF data are included
+DEBUG stores the first 70-1 triplet map and up to 48 header bytes. It also
+retains WLA/LAC HEX and decimal, STF, section location and timestamp for
+at most three unique selected samples in input order, across all SIDs.
+These are not necessarily peak samples. It is not a dump of every record. No credentials or live SMF data are included
 in this repository or required by its desktop tests.

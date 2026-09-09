@@ -106,6 +106,47 @@ say 'SID CHARACTERS PASS'
 """
 run(driver('national_sid', body), contains='SID CHARACTERS PASS')
 
+# Distinct adjacent WLA/LAC values must never be interchanged.
+body = """
+g.testing = 1
+call parameters 'DATE=2018001 DEBUG=Y'
+a = fixture('SYSA','0118001F','0000000F','1500000F',12,1)
+a = overlay('000000490000000C'x,a,148+32-3,8)
+call process a
+call process a
+sk = 'S'c2x('SYSA')
+call check word(g.topRow.sk.1,1)=12,'LAC not WLA'
+call check pos('WLA_HEX=00000049 WLA=73',g.debugField.1)>0, ,
+  'WLA diagnostic'
+call check pos('LAC_HEX=0000000C LAC=12',g.debugField.1)>0, ,
+  'LAC diagnostic'
+call process fixture('SYSA','0118002F','0000000F','1500000F',99,1)
+call check g.debugCount=1,'duplicates and filtered samples omitted'
+do n = 1 to 4
+  a = fixture('SYSB','0118001F','0000000F','1500000F',9,1)
+  a = overlay('0000003A00000009'x,a,148+32-3,8)
+  a = overlay(x2c('0000'right(n,2,'0')'0F'),a,44+10-3,4)
+  call process a
+end
+call check g.debugCount=3,'three sample diagnostic limit'
+sk = 'S'c2x('SYSB')
+call check word(g.topRow.sk.1,1)=9,'second SID LAC not WLA'
+call check pos('WLA=58',g.debugField.2)>0,'second SID WLA'
+call report
+found = 0
+do n = 1 to g.outputCnt
+  if pos('DEBUG FIELDS WLA_HEX=00000049',g.output.n)>0 then
+    found = 1
+end
+call check found=1,'field diagnostic reaches report'
+call initialize
+g.testing = 1
+call process fixture('SYSA','0118001F','0000000F','1500000F',0,1)
+call check g.debugCount=0,'debug disabled by default'
+say 'WLA/LAC DEBUG PASS'
+"""
+run(driver('wla_lac_debug', body), contains='WLA/LAC DEBUG PASS')
+
 # Independent Python byte construction, using published IBM sample
 # boundaries: nine triplets, product at 100/104, CPU at 204/344.
 # Text uses the desktop interpreter's ASCII, not a raw EBCDIC dump.

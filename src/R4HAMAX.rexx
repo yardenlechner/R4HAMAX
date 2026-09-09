@@ -213,7 +213,19 @@ process: procedure expose g.
     g.weakCnt = g.weakCnt + 1
   lac = uint(rec,co+36,4)
   scope = bitand(stf,'10'x) == '10'x
+  previousValid = g.validCnt
   call accept sid,sample,sd,ed,dur,lac,scope,ident,lgo
+  if g.cfgDebug = 'Y' & g.validCnt > previousValid & ,
+      g.debugCount < 3 then do
+    g.debugCount = g.debugCount + 1
+    di = g.debugCount
+    g.debugSample.di = 'SID='sid 'SAMPLE='sample
+    g.debugMap.di = 'CCS='co 'CCL='cl 'LAC_POS='(co+36-3)
+    g.debugField.di = 'WLA_HEX='c2x(substr(rec,co+32-3,4)) ||,
+      ' WLA='uint(rec,co+32,4) ||,
+      ' LAC_HEX='c2x(substr(rec,co+36-3,4)) 'LAC='lac ||,
+      ' STF_HEX='c2x(stf) 'STF_BIT3='scope
+  end
 return
 
 accept: procedure expose g.
@@ -434,6 +446,11 @@ report: procedure expose g.
   if g.cfgDebug = 'Y' & g.debugText <> '' then do
     call emit 'REPORT','DEBUG 'g.debugText
     call emit 'REPORT','DEBUG HEX 'g.debugHex
+  end
+  do di = 1 to g.debugCount
+    call emit 'REPORT','DEBUG SAMPLE 'di g.debugSample.di
+    call emit 'REPORT','DEBUG MAP 'g.debugMap.di
+    call emit 'REPORT','DEBUG FIELDS 'g.debugField.di
   end
   if g.testing = 1 then return
   address TSO 'EXECIO 0 DISKW REPORT (FINIS'

@@ -33,6 +33,7 @@ interval splitting across hours. SIDs are never summed into a CPC peak.
 
 | File | Purpose |
 |---|---|
+| [FIXES LOG.md](FIXES%20LOG.md) | Corrections, implemented guards and host verification checklist |
 | [src/R4HAMAX.rexx](src/R4HAMAX.rexx) | Complete program and built-in SELFTEST |
 | [jcl/RUN_EXISTING.jcl](jcl/RUN_EXISTING.jcl) | Read an existing SMF dump |
 | [jcl/RUN_EXTRACT.jcl](jcl/RUN_EXTRACT.jcl) | IFASMFDP followed by REXX |
@@ -104,7 +105,7 @@ handling at your site; see installation notes.
 | `DAYMODE` | `END` | Assign sample to interval `END` or `START` |
 | `HOURLY` | `Y` | Produce hourly sample means: Y/N |
 | `CSV` | `N` | Write accepted unique samples to CSVOUT: Y/N |
-| `DEBUG` | `N` | Limited first Type 70-1 mapping and hex: Y/N |
+| `DEBUG` | `N` | First mapping plus up to 3 selected WLA/LAC/STF traces: Y/N |
 
 `SELFTEST` is a separate mode, without other parameters or SMFIN.
 Repeated parameters use the last value. Arguments are uppercased.

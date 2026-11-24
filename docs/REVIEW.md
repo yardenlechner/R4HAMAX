@@ -4,6 +4,26 @@ Review date: 2026-09-09. Scope: the standalone R4HAMAX reader, JCL,
 tests and documentation. This is a code/mapping review, not IBM
 certification or a completed z/OS acceptance test.
 
+## CPC extension review - 2026-11-23
+
+The original findings below still describe default SID mode. The new
+opt-in CPC path reuses its parser but groups by raw CPC/partition keys,
+requires a declared daily inventory, and admits only regular aligned
+15-minute intervals with compatible clock/scope metadata. It reports
+raw concurrent sums for complete hours and makes missing hours explicit.
+The independent suite checks actual report values and top-level return
+paths. The legacy report example remains unchanged.
+
+This review found and guarded an additional clock risk: matching LGO
+alone does not establish comparable local clocks when a hypervisor time
+offset is present. The initial CPC profile rejects nonzero HOF and known
+simplified VM data. Native LPAR provenance still requires site verification.
+
+The new result is not an SCRT/N5 parity claim. See the
+[evidence ledger](SCRT_RULES.md), [workflow](SCRT_WORKFLOW.md) and
+[validation record](CPC_VALIDATION.md). Actual z/OS and installed-release
+SCRT reconciliation remain open acceptance gates.
+
 ## Findings addressed
 
 | Finding | Change and regression evidence |

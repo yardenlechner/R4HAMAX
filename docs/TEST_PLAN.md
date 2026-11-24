@@ -7,6 +7,7 @@ Run the production source's in-memory checks with:
 ```text
 regina src/R4HAMAX.rexx SELFTEST
 python tests/run_checks.py regina
+python tests/run_cpc_checks.py regina
 ```
 
 On Windows, pass a full path to regina.exe if necessary. Python uses only
@@ -96,3 +97,39 @@ comparisons pass and all warnings are explained. The review can identify
 known risks and add guards; it cannot certify the absence of all future
 bugs or data-gatherer defects. A SCRT mismatch alone is not a parser bug
 because its metric and aggregation policy may differ.
+
+## CPC mode regression and acceptance
+
+`tests/run_cpc_checks.py` exercises the optional `CPC=Y` path with
+independently constructed IBM-layout binary records and a Python
+`Fraction` oracle. Its 73 scenarios cover physical CPC/partition identity,
+concurrent sums, precision, all 24 report hours, missing inventory members,
+exact duplicates and conflicts, the five-value example, order invariance,
+time/scope guards and unsupported input. Actual emitted rows are checked:
+an incomplete hour must not contain a numeric CPC total.
+
+The suite also runs the unchanged production entry logic with only TSO
+I/O mocked. It verifies full-day RC0, warning/incomplete RC4 and failure
+RC12; separate inventory/data batches including EOF with records; the
+14-field audit CSV; and DD write/truncation/close errors. See
+[CPC_VALIDATION.md](CPC_VALIDATION.md) for the executed results.
+
+Add these host checks to the original acceptance plan:
+
+1. Verify all expected native z/OS LPARs in CPCMAP using raw POM/CSC bytes
+   and writing PTN, including all input sysplexes. Check actual LGO/HOF.
+2. Run a known complete day through `RUN_CPC.jcl`. Compare selected raw
+   LAC values, each LPAR mean and concurrent CPC sum independently.
+3. On disposable copies, remove one interval, then all records of a
+   declared LPAR. The affected hours must be INCOMPLETE with RC4 and no
+   numeric CPC total. A zero-valued complete interval must remain valid.
+4. Verify an unexpected member, conflicting copy, off-grid interval or
+   unsupported offset returns RC12 and partial output is discarded.
+5. Preserve SCRT version/section and compare the same source interval
+   identities, capacity data and hourly values. Do not assert N5 parity
+   from agreement of one maximum; follow the [rule gates](SCRT_RULES.md).
+
+The first implementation does not support a time-varying inventory,
+general UTC conversion, arbitrary interval durations or SCRT adjustment
+and rounding rules. Test explicit rejection/status for these boundaries,
+not an invented expected billing value.

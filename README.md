@@ -3,8 +3,15 @@
 **Author and project owner: Yarden Lechner**
 
 TSO/E REXX that reads **SMF Type 70 Subtype 1**, extracts `SMF70LAC`,
-and reports the peak and Top-N **per SID**. Optional CSV output and hourly
-sample means are included. No compile or link is required on z/OS.
+and reports the peak and Top-N **per SID** by default. Optional CSV output
+and hourly sample means are included. The opt-in `CPC=Y` mode aggregates
+raw hourly LAC across an explicit inventory of LPARs on each CPC.
+No compile or link is required on z/OS.
+
+**CPC development:** [agent workflow and milestones](docs/SCRT_WORKFLOW.md),
+[IBM evidence and open rules](docs/SCRT_RULES.md), and
+[CPC operating instructions](docs/CPC_MODE.md). The initial CPC mode is
+a restricted raw diagnostic, not SCRT/N5 or billing equivalence.
 
 **Validation status:** synthetic parser and regression tests run under
 Regina REXX locally and in GitHub Actions. Real SMF, TSO/E EXECIO, EBCDIC
@@ -24,10 +31,17 @@ another four hours of LAC values. A peak between RMF records may be missed.
 | Hourly `MAX_MSU` | Largest sample assigned to that hour |
 | `PEAK_HOURLY_MEAN` | Highest hourly sample mean for each SID |
 
-For samples of 100, 160 and 130 MSU in one hour, the interval peak is 160
+In default `CPC=N` mode, for samples of 100, 160 and 130 MSU in one hour,
+the interval peak is 160
 and the sample mean is 130. **Hourly output is not an SCRT calculation.**
 It does not apply licensing rules, duration weights, gap filling or
-interval splitting across hours. SIDs are never summed into a CPC peak.
+interval splitting across hours. This legacy mode does not sum SIDs.
+
+With `CPC=Y`, complete 15-minute samples are assigned by interval midpoint,
+averaged per physical LPAR and summed concurrently per CPC. An explicit
+`CPCMAP` inventory is mandatory. Missing slots/LPARs/hours remain incomplete;
+the tool reports a peak among complete hours and flags an incomplete day.
+See [CPC_MODE.md](docs/CPC_MODE.md) for the fixed-grid, time and scope limits.
 
 ## Files
 
@@ -38,14 +52,17 @@ interval splitting across hours. SIDs are never summed into a CPC peak.
 | [jcl/RUN_EXISTING.jcl](jcl/RUN_EXISTING.jcl) | Read an existing SMF dump |
 | [jcl/RUN_EXTRACT.jcl](jcl/RUN_EXTRACT.jcl) | IFASMFDP followed by REXX |
 | [jcl/RUN_LOGSTREAM.jcl](jcl/RUN_LOGSTREAM.jcl) | IFASMFDL followed by REXX |
+| [jcl/RUN_CPC.jcl](jcl/RUN_CPC.jcl) | Raw CPC analysis with configurable input and CPCMAP |
 | [jcl/SELFTEST.jcl](jcl/SELFTEST.jcl) | Synthetic tests under TSO/E |
 | [docs/INSTALL.md](docs/INSTALL.md) | Installation and operating instructions |
 | [docs/DESIGN.md](docs/DESIGN.md) | Mapping, algorithm and defensive checks |
 | [docs/REVIEW.md](docs/REVIEW.md) | IBM findings, fixes and remaining boundaries |
 | [docs/TEST_PLAN.md](docs/TEST_PLAN.md) | Automated tests and host acceptance |
 | [docs/SOURCES.md](docs/SOURCES.md) | Primary IBM references |
+| [docs/PUBLICATION_REVIEW.md](docs/PUBLICATION_REVIEW.md) | Publication and independent privacy-review checklist |
 | [examples/report.txt](examples/report.txt) | Actual output from synthetic inputs |
 | [tests/run_checks.py](tests/run_checks.py) | Local and CI regression runner |
+| [tests/run_cpc_checks.py](tests/run_cpc_checks.py) | Independent binary CPC fixtures and exact-value oracle |
 
 ## Quick installation
 
@@ -106,11 +123,19 @@ handling at your site; see installation notes.
 | `HOURLY` | `Y` | Produce hourly sample means: Y/N |
 | `CSV` | `N` | Write accepted unique samples to CSVOUT: Y/N |
 | `DEBUG` | `N` | First mapping plus up to 3 selected WLA/LAC/STF traces: Y/N |
+| `CPC` | `N` | Y enables the restricted raw CPC mode with required CPCMAP |
 
 `SELFTEST` is a separate mode, without other parameters or SMFIN.
 Repeated parameters use the last value. Arguments are uppercased.
 
+`CPC=Y` requires a specific DATE, `SID=*`, and `HOURLY=Y`. DAYMODE,
+TOP and DEBUG remain legacy-mode controls; CPC output uses midpoint hours
+and its audit CSV. Use the dedicated CPC JCL and operating instructions.
+
 ## Input and time contract
+
+The following describes legacy `CPC=N`; CPC mode's stricter physical
+identity, fixed population and time contract is in [CPC_MODE.md](docs/CPC_MODE.md).
 
 - Supported input is unbroken IBM RMF Monitor I Type 70-1 data with a
   product section of at least 104 bytes and CPU control of at least 94.
@@ -136,6 +161,10 @@ Repeated parameters use the last value. Arguments are uppercased.
 | 4 | No samples, rejected records, duplicates, scope/skipped-sample warnings, Boost/conversion/capacity-change flags, or weak identity metadata |
 | 12 | Invalid parameters, I/O failure, conflicting duplicates, split RMF records, identity/time-zone changes, sample limit or REXX condition |
 
+CPC mode also returns RC4 for any incomplete inventory hour, and RC12 for
+invalid/empty inventory, unexpected physical members or unsupported timing,
+hypervisor/VM scope and offset cases. RC0 is not evidence of SCRT parity.
+
 Some input flag counts precede DATE/SID filtering; see the design document.
 RC 0 does not prove complete coverage. Discard partial REPORT/CSVOUT after
 RC 12. Errors appear in SYSTSPRT.
@@ -147,6 +176,7 @@ Regina REXX and Python are needed for workstation tests only:
 ```text
 regina src/R4HAMAX.rexx SELFTEST
 python tests/run_checks.py regina
+python tests/run_cpc_checks.py regina
 ```
 
 On Windows, the second argument can be the full path to `regina.exe`.
@@ -163,8 +193,17 @@ and split large input by day.
 Review IPL warm-up, gaps, overlapping intervals and extraction completeness.
 WLM initializes its history with zeros at IPL; the program preserves recorded
 LAC rather than inventing a correction. Boost flags are reported without
-rescaling LAC. Full RMF reassembly, gap detection and SCRT reproduction are
-outside this implementation. The [review](docs/REVIEW.md) explains why.
+rescaling LAC. Full RMF reassembly, general gap/overlap resolution and SCRT
+reproduction remain outside this implementation. CPC mode detects missing
+slots against its fixed inventory/grid; it rejects unsupported timing.
+The [review](docs/REVIEW.md) explains the remaining boundaries.
 
-This repository is public. Examples use synthetic records and placeholders.
-Do not commit real SMF, credentials or sensitive site identifiers.
+This repository is public. Tests construct binary records in code, and the
+five-value CPC teaching sequence is independently invented. Example names
+and fixture population counts illustrate test cases; they do not establish
+a verified production inventory.
+Published IBM examples are separately attributed to their primary sources.
+Do not commit real SMF, private traces, credentials or site identifiers.
+Review Git metadata as well as files before publishing; see the
+[publication checklist](docs/PUBLICATION_REVIEW.md). Cleaning current files
+does not remove material already present in earlier commits or other copies.

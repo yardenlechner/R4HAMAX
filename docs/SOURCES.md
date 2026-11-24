@@ -1,5 +1,9 @@
 # IBM references
 
+The CPC extension has a versioned evidence/uncertainty ledger in
+[SCRT_RULES.md](SCRT_RULES.md), including IBM APAR OA64501 midpoint
+allocation and the distinction between raw LAC, N5 and final billing.
+
 Mapping reviewed on 2026-09-09. Confirm against the z/OS/RMF release
 installed at your site. This repository contains original code and
 explanations, not a copy of the IBM manuals.

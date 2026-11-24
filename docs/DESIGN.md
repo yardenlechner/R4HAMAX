@@ -1,5 +1,13 @@
 # Design and record interpretation
 
+This document describes the original/default `CPC=N` path. The opt-in
+`CPC=Y` extension shares its binary parser and branches before the legacy
+DATE/SID selection and SID-keyed `accept` routine. Its separate physical
+identity, midpoint-hour, fixed-inventory and completeness contracts are
+specified in [CPC_MODE.md](CPC_MODE.md). Development stages and verified
+versus unresolved SCRT rules are in [SCRT_WORKFLOW.md](SCRT_WORKFLOW.md)
+and [SCRT_RULES.md](SCRT_RULES.md).
+
 ## Goal and scope
 
 For each selected SID, report the maximum recorded SMF70LAC and Top-N

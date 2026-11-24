@@ -2,10 +2,26 @@ name: REXX checks
 on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
+concurrency:
+  group: rexx-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   rexx:
+    name: ${{ matrix.suite }} regression
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [legacy, cpc]
     steps:
       - uses: actions/checkout@v7
       - run: sudo apt-get update && sudo apt-get install -y regina-rexx
-      - run: python3 tests/run_checks.py regina
+      - name: Legacy parser and SID regression
+        if: matrix.suite == 'legacy'
+        run: python3 tests/run_checks.py regina
+      - name: Independent CPC fixtures and oracle
+        if: matrix.suite == 'cpc'
+        run: python3 tests/run_cpc_checks.py regina
+      - name: Whitespace check
+        run: git show --check --oneline HEAD

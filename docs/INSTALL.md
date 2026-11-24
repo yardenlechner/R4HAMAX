@@ -2,6 +2,10 @@
 
 Project owner: **Yarden Lechner**.
 
+For the opt-in raw CPC calculation, use [CPC_MODE.md](CPC_MODE.md) and
+`jcl/RUN_CPC.jcl` in addition to the source-transfer instructions here.
+The existing jobs below retain default SID-mode behavior.
+
 ## Batch operation: no manual TSO commands
 
 All supplied run paths are JCL jobs. After transferring the source and

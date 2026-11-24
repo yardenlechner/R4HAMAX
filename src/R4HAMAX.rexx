@@ -10,8 +10,10 @@ if args = 'SELFTEST' then do
   exit 0
 end
 call parameters args
+if g.cfgCpc = 'Y' then call cpcReadMap
 call readInput
 call report
+if g.cpcIncompleteCnt > 0 then exit 4
 if g.validCnt = 0 then exit 4
 if g.rejectCnt + g.scopeCnt + g.dupCnt > 0 then exit 4
 if g.skippedCnt > 0 then exit 4
@@ -28,6 +30,7 @@ initialize:
   g.cfgHourly = 'Y'
   g.cfgDebug = 'N'
   g.cfgCsv = 'N'
+  g.cfgCpc = 'N'
   g.debugText = ''
   g.firstDate = ''
 return
@@ -44,6 +47,7 @@ parameters: procedure expose g.
       when pk = 'HOURLY' then g.cfgHourly = pv
       when pk = 'DEBUG' then g.cfgDebug = pv
       when pk = 'CSV' then g.cfgCsv = pv
+      when pk = 'CPC' then g.cfgCpc = pv
       otherwise call fatal 'Unknown parameter: 'word(args,pi)
     end
   end
@@ -66,12 +70,24 @@ parameters: procedure expose g.
     call fatal 'DEBUG must be Y or N'
   if g.cfgCsv <> 'Y' & g.cfgCsv <> 'N' then
     call fatal 'CSV must be Y or N'
+  if g.cfgCpc <> 'Y' & g.cfgCpc <> 'N' then
+    call fatal 'CPC must be Y or N'
+  if g.cfgCpc = 'Y' then do
+    if g.cfgDate = '*' then call fatal 'CPC=Y requires DATE=YYYYDDD'
+    if g.cfgSid <> '*' then call fatal 'CPC=Y requires SID=*'
+    if g.cfgHourly <> 'Y' then call fatal 'CPC=Y requires HOURLY=Y'
+  end
 return
 
 readInput: procedure expose g.
   if g.cfgCsv = 'Y' then do
-    call emit 'CSVOUT',,
-      'SID,SAMPLE,START,END,DURATION_MS,LAC_MSU,STF_BIT3'
+    if g.cfgCpc = 'Y' then
+      call emit 'CSVOUT',,
+        'CPC_HEX,PTN,SID,START,END,HOUR,DURATION_MS,LAC_MSU,' ||,
+        'WLA_MSU,LGO_HEX,HOF_HEX,STF_BIT3,FLA_HEX,STF_HEX'
+    else
+      call emit 'CSVOUT',,
+        'SID,SAMPLE,START,END,DURATION_MS,LAC_MSU,STF_BIT3'
   end
   do forever
     batch. = ''
@@ -184,6 +200,10 @@ process: procedure expose g.
     return
   end
   ed = stamp(edate,endms)
+  if g.cfgCpc = 'Y' then do
+    call cpcProcess rec,po,co,jd,ms,dur,sd,ed,fla,stf
+    return
+  end
   sample = ed
   if g.cfgMode = 'START' then sample = sd
   if g.cfgDate <> '*' & left(sample,7) <> g.cfgDate then do
@@ -296,6 +316,224 @@ accept: procedure expose g.
     call emit 'CSVOUT',sid','sample','sd','ed','dur','lac','scope
 return
 
+/* CPC is an opt-in, fixed-inventory raw-LAC diagnostic profile. */
+cpcReadMap: procedure expose g.
+  do forever
+    map. = ''
+    address TSO 'EXECIO 256 DISKR CPCMAP (STEM MAP.'
+    mapRc = rc
+    if mapRc <> 0 & mapRc <> 2 then do
+      address TSO 'EXECIO 0 DISKR CPCMAP (FINIS'
+      call fatal 'CPCMAP read failed RC='mapRc
+    end
+    do mi = 1 to map.0
+      call cpcMapLine map.mi
+    end
+    if mapRc = 2 then leave
+  end
+  address TSO 'EXECIO 0 DISKR CPCMAP (FINIS'
+  if rc <> 0 then call fatal 'CPCMAP close failed RC='rc
+  if g.cpcCount = 0 then call fatal 'CPCMAP has no expected LPARs'
+return
+
+/* Inventory syntax: 40 hex CPC bytes, decimal partition number. */
+cpcMapLine: procedure expose g.
+  parse upper arg line
+  line = strip(line)
+  if line = '' then return
+  if left(line,1) = '#' then return
+  if words(line) <> 2 then call fatal 'CPCMAP requires CPC_HEX PTN'
+  machineHex = word(line,1); part = word(line,2)
+  if length(machineHex) <> 40 then call fatal 'CPCMAP CPC_HEX length'
+  if verify(machineHex,'0123456789ABCDEF') > 0 then
+    call fatal 'CPCMAP CPC_HEX is not hexadecimal'
+  if verify(part,'0123456789') > 0 then
+    call fatal 'CPCMAP PTN must be decimal 0..255'
+  if part > 255 then call fatal 'CPCMAP PTN must be decimal 0..255'
+  part = part+0
+  machine = x2c(machineHex)
+  if cpcBlank(left(machine,4)) | cpcBlank(right(machine,16)) then
+    call fatal 'CPCMAP requires nonblank plant and sequence'
+  ck = 'C'machineHex
+  pk = ck'.P'part
+  if g.cpcMember.pk = 1 then call fatal 'Duplicate CPCMAP member'
+  if g.cpcPartCount.ck = 0 then do
+    g.cpcCount = g.cpcCount+1
+    ci = g.cpcCount; g.cpcKey.ci = ck
+    g.cpcHex.ck = machineHex
+  end
+  g.cpcPartCount.ck = g.cpcPartCount.ck+1
+  pi = g.cpcPartCount.ck; g.cpcPart.ck.pi = pk
+  g.cpcMember.pk = 1
+  g.cpcPtn.pk = part
+return
+
+cpcBlank: procedure
+  parse arg value
+return strip(translate(value,' ','00'x)) = ''
+
+cpcProcess: procedure expose g.
+  parse arg rec,po,co,jd,ms,dur,sd,ed,fla,stf
+  /* Midpoint is independent of legacy DAYMODE start/end labels. */
+  midDate = jd; midms = ms + dur%2
+  if midms >= 86400000 then do
+    midDate = nextDay(jd)
+    midms = midms-86400000
+  end
+  if midDate <> g.cfgDate then do
+    g.dateCnt = g.dateCnt+1
+    return
+  end
+  if dur <> 900000 | ms//900000 <> 0 then
+    call fatal 'CPC profile requires aligned 15-minute intervals'
+  sid = strip(substr(rec,14-3,4))
+  if validSid(sid) = 0 then call fatal 'CPC record has invalid SID'
+  if bitand(stf,'10'x) \== '10'x then
+    call fatal 'CPC requires LPAR-scoped LAC: STF bit 3 must be ON'
+  if substr(rec,co+40-3,8) \== copies('00'x,8) then
+    call fatal 'CPC profile does not support hypervisor time offset'
+  inb = substr(rec,co+4-3,1)
+  if bitand(inb,'04'x) \== '00'x then
+    call fatal 'CPC profile does not support simplified VM data'
+  machine = substr(rec,co+74-3,20)
+  names = substr(rec,po+88-3,16)
+  if cpcBlank(left(machine,4)) | cpcBlank(right(machine,16)) then
+    call fatal 'CPC requires nonblank plant and sequence'
+  if cpcBlank(right(names,8)) then
+    call fatal 'CPC requires nonblank system name'
+  /* Blank sysplex is permitted; names are still compared as bytes. */
+  machineHex = c2x(machine)
+  ptn = uint(rec,po+50,1)
+  ck = 'C'machineHex; pk = ck'.P'ptn
+  if g.cpcMember.pk <> 1 then
+    call fatal 'CPC record is not declared in CPCMAP: 'machineHex ptn
+  ident = c2x(names)
+  lgo = c2x(substr(rec,po+60-3,8))
+  if g.cpcSourceSeen.pk = 1 then do
+    if g.cpcIdentity.pk \== ident then
+      call fatal 'CPC partition source identity changed: 'ptn
+  end
+  else do
+    g.cpcSourceSeen.pk = 1
+    g.cpcIdentity.pk = ident
+  end
+  if g.cpcOffsetSeen.ck = 1 then do
+    if g.cpcOffset.ck \== lgo then
+      call fatal 'CPC requires one stable GMT/local offset'
+  end
+  else do
+    g.cpcOffsetSeen.ck = 1
+    g.cpcOffset.ck = lgo
+  end
+  hour = midms%3600000
+  slot = (ms//3600000)%900000
+  lac = uint(rec,co+36,4)
+  wla = uint(rec,co+32,4)
+  signature = lac':'wla':1'
+  /* On this grid a slot uniquely identifies both start and end. */
+  if g.cpcSeen.pk.hour.slot <> 0 then do
+    if g.cpcSeen.pk.hour.slot \== signature then
+      call fatal 'Conflicting CPC interval: PTN='ptn 'HOUR='hour
+    g.dupCnt = g.dupCnt+1
+    return
+  end
+  if g.validCnt >= 250000 then
+    call fatal '250000 unique samples exceeded; split input by day'
+  g.cpcSeen.pk.hour.slot = signature
+  g.validCnt = g.validCnt+1
+  g.cpcN.pk.hour = g.cpcN.pk.hour+1
+  g.cpcSum.pk.hour = g.cpcSum.pk.hour+lac
+  hourstamp = midDate'/'right(hour,2,'0')
+  if g.cfgCsv = 'Y' then
+    call emit 'CSVOUT',machineHex','ptn','sid','sd','ed',' ||,
+      hourstamp','dur','lac','wla','lgo',0000000000000000,1,' ||,
+      c2x(fla)','c2x(stf)
+return
+
+cpcReport: procedure expose g.
+  if g.cpcCount = 0 then call fatal 'CPCMAP has no expected LPARs'
+  call emit 'REPORT','R4HAMAX - aligned CPC raw LAC diagnostics'
+  call emit 'REPORT','RAW LAC ONLY - NOT SCRT / N5 / BILLING'
+  call emit 'REPORT','DATE='g.cfgDate 'HOUR_ASSIGN=MIDPOINT'
+  call emit 'REPORT','LOCAL_TIME; one stable raw LGO per CPC'
+  call emit 'REPORT','HOF=0; simplified VM data unsupported'
+  call emit 'REPORT','PROFILE=ALIGNED_15_MINUTES INVENTORY=CPCMAP'
+  call emit 'REPORT','DAYMODE applies only to CPC=N; no UTC conversion'
+  g.cpcIncompleteCnt = 0
+  do ci = 1 to g.cpcCount
+    ck = g.cpcKey.ci
+    g.cpcComplete.ck = 0; g.cpcIncomplete.ck = 0
+    g.cpcPeakSet.ck = 0
+    call emit 'REPORT',' '
+    call emit 'REPORT','CPC='g.cpcHex.ck ||,
+      ' EXPECTED_LPARS='g.cpcPartCount.ck
+    if g.cpcOffsetSeen.ck = 1 then
+      call emit 'REPORT','LGO_HEX='g.cpcOffset.ck
+    else call emit 'REPORT','LGO_HEX=UNKNOWN_NO_RECORDS'
+    do hour = 0 to 23
+      hourstamp = g.cfgDate'/'right(hour,2,'0')
+      total = 0; complete = 0
+      do pi = 1 to g.cpcPartCount.ck
+        pk = g.cpcPart.ck.pi
+        n = g.cpcN.pk.hour
+        row = 'LPAR_HOUR PTN='g.cpcPtn.pk ||,
+          ' HOUR='hourstamp 'N='n
+        if n = 4 then do
+          avg = g.cpcSum.pk.hour/4
+          total = total+avg; complete = complete+1
+          call emit 'REPORT',row ||,
+            ' STATUS=COMPLETE RAW_MEAN_MSU='format(avg,,3)
+        end
+        else call emit 'REPORT',row 'STATUS=INCOMPLETE'
+      end
+      row = 'CPC_HOUR HOUR='hourstamp ||,
+        ' COMPLETE_LPARS='complete ||,
+        ' EXPECTED_LPARS='g.cpcPartCount.ck
+      if complete = g.cpcPartCount.ck then do
+        g.cpcComplete.ck = g.cpcComplete.ck+1
+        g.cpcValue.ck.hour = total
+        call emit 'REPORT',row ||,
+          ' STATUS=COMPLETE RAW_MSU='format(total,,3)
+        if g.cpcPeakSet.ck = 0 then do
+          g.cpcPeak.ck = total
+          g.cpcPeakHour.ck = hourstamp
+          g.cpcPeakSet.ck = 1
+        end
+        else if total > g.cpcPeak.ck then do
+          g.cpcPeak.ck = total
+          g.cpcPeakHour.ck = hourstamp
+        end
+      end
+      else do
+        g.cpcIncomplete.ck = g.cpcIncomplete.ck+1
+        g.cpcIncompleteCnt = g.cpcIncompleteCnt+1
+        call emit 'REPORT',row 'STATUS=INCOMPLETE'
+      end
+    end
+    call emit 'REPORT','COMPLETE_HOURS='g.cpcComplete.ck ||,
+      ' INCOMPLETE_HOURS='g.cpcIncomplete.ck
+    if g.cpcPeakSet.ck = 1 then
+      call emit 'REPORT','OBSERVED_COMPLETE_HOUR_PEAK HOUR=' ||,
+        g.cpcPeakHour.ck 'RAW_MSU='format(g.cpcPeak.ck,,3)
+    else call emit 'REPORT','NO_COMPLETE_HOUR_PEAK'
+    if g.cpcIncomplete.ck > 0 then
+      call emit 'REPORT','FULL_DAY_PEAK_NOT_PROVEN: incomplete hours'
+  end
+  call emit 'REPORT',' '
+  call emit 'REPORT','READ='g.readCnt 'TYPE70='g.typeCnt ||,
+    ' SUB1='g.subCnt 'VALID='g.validCnt
+  call emit 'REPORT','DATE_FILTER='g.dateCnt ||,
+    ' REJECTED='g.rejectCnt 'DUPLICATES='g.dupCnt
+  call emit 'REPORT','INPUT_RECORDS_WITH_SKIPPED_SAMPLES='g.skippedCnt
+  call emit 'REPORT','INPUT_BOOST='g.boostCnt ||,
+    ' INPUT_CONVERTED='g.convertedCnt
+  call emit 'REPORT','INPUT_CAPACITY_CHANGE='g.capacityCnt
+  call emit 'REPORT','No cap adjustments, gap fill or SCRT rounding'
+  if g.testing = 1 then return
+  address TSO 'EXECIO 0 DISKW REPORT (FINIS'
+  if rc <> 0 then call fatal 'REPORT close failed RC='rc
+return
+
 validSid: procedure
   parse arg sid
   if length(sid) < 1 | length(sid) > 4 then return 0
@@ -378,6 +616,10 @@ return jd'/'right(hh,2,'0')':'right(mm,2,'0')':' ||,
   right(ss,2,'0')'.'right(ms//1000,3,'0')
 
 report: procedure expose g.
+  if g.cfgCpc = 'Y' then do
+    call cpcReport
+    return
+  end
   call emit 'REPORT','R4HAMAX - recorded interval R4HA peak (MSU)'
   call emit 'REPORT','DATE='g.cfgDate 'SID='g.cfgSid ||,
     ' DAYMODE='g.cfgMode 'TOP='g.cfgTop
